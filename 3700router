@@ -2,11 +2,15 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
+from BGP Router.bgp-router-starter-code.TableRow import TableRow
+
 class Router:
 
     relations = {}
     sockets = {}
     ports = {}
+    fwdTable = []
+    announcements = []
 
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
@@ -41,8 +45,33 @@ class Router:
                 msg = k.decode('utf-8')
 
                 print("Received message '%s' from %s" % (msg, srcif))
+
+                msg = json.loads(msg)
+                if msg["type"] == "update":
+                    self.addEntry(msg["msg"])
+                elif msg["type"] == "dump":
+                    self.sendFwdTable(msg["src"])
+                    
         return
 
+    def addEntry(self, msg):
+        self.fwdTable.append(TableRow(msg))
+        return
+        
+    def sendFwdTable(self, dst):
+        table = []
+        for t in self.fwdTable:
+            table.append(t.getRow())
+            
+        msg = json.dumps({
+            "src": self.our_addr(dst),
+            "dst": dst,
+            "type": "table",
+            "msg": table
+        })
+        self.send(dst, msg)
+        return
+        
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
     parser.add_argument('asn', type=int, help="AS number of this router")
