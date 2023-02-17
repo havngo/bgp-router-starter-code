@@ -7,18 +7,25 @@ class TableRow:
     ASPath = ""
     selfOrigin = ""
     origin = ""
-    msg = {}
-    
-    def __init__(self, msg):
+
+    def __init__(self, msg, src):
         self.msg = {}
         self.network = msg["network"]
         self.netmask = msg["netmask"]
-        self.peer = msg["peer"]
+        self.peer = src
         self.localpref = msg["localpref"]
         self.ASPath = msg["ASPath"]
         self.selfOrigin = msg["selfOrigin"]
         self.origin = msg["origin"]
-        
+
     def getRow(self):
-        return json.dumps(self.msg)
-        
+        msg = {
+            "network": self.network,
+            "netmask": self.netmask,
+            "peer": self.peer,
+            "localpref": self.localpref,
+            "ASPath": self.ASPath,
+            "selfOrigin": self.selfOrigin,
+            "origin": self.origin
+        }
+        return msg

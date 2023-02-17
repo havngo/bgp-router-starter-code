@@ -1,8 +1,8 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3
 
 import argparse, socket, time, json, select, struct, sys, math
 
-from BGP Router.bgp-router-starter-code.TableRow import TableRow
+from TableRow import TableRow
 
 class Router:
 
@@ -48,21 +48,65 @@ class Router:
 
                 msg = json.loads(msg)
                 if msg["type"] == "update":
-                    self.addEntry(msg["msg"])
+                    self.handleUpdate(msg)
                 elif msg["type"] == "dump":
                     self.sendFwdTable(msg["src"])
-                    
+                elif msg["type"] == "data":
+                    self.handleData(msg)
+
         return
 
-    def addEntry(self, msg):
-        self.fwdTable.append(TableRow(msg))
+    def handleData(self, msg):
+        noRoute = {
+            "src": self.our_addr(msg["src"]),
+            "dst": msg["src"],
+            "type": "no route",
+            "msg": {}
+        }
+        for ip in self.ports:
+            if ip == msg["dst"]:
+                if self.ports[ip] == self.ports[msg["src"]]:
+                    self.send(msg["src"], json.dumps(msg))
+                    return
+                else:
+                    self.send(ip, json.dumps(msg))
+                    return
+        # for row in self.fwdTable:
+
+
+    def overlapIP(self, ip1, ip2):
+        ip1 = ip1.split(".")
+        ip2 = ip2.split(".")
+
+        for num in range(0, 4):
+            if ip1[num] == ip2[num]:
+                continue;
+            elif ip1 == 0 | ip2 == 0:
+                return;
+
+
+    def handleUpdate(self, msg):
+        #store the message
+        self.announcements.append(msg)
+        # add an entry to the table
+        row = TableRow(msg["msg"], msg["src"])
+        self.fwdTable.append(row)
+        # fwd the announcements if neccessary
+        if self.relations[msg["src"]] == "cust":
+            for ip in self.relations:
+                if (ip != msg["src"]):
+                    self.send(ip, json.dumps(msg))
+        else:
+            for ip in relations:
+                if (relations[ip] == "cust"):
+                    self.send(ip, json.dumps(msg))
         return
-        
+
     def sendFwdTable(self, dst):
         table = []
         for t in self.fwdTable:
             table.append(t.getRow())
-            
+
         msg = json.dumps({
             "src": self.our_addr(dst),
             "dst": dst,
@@ -71,7 +115,7 @@ class Router:
         })
         self.send(dst, msg)
         return
-        
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
     parser.add_argument('asn', type=int, help="AS number of this router")
