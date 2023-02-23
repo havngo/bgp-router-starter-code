@@ -9,7 +9,6 @@ class TableRow:
     origin = ""
 
     def __init__(self, msg, src):
-        self.msg = {}
         self.network = msg["network"]
         self.netmask = msg["netmask"]
         self.peer = src
