@@ -1,12 +1,26 @@
 #!/usr/bin/env python3 
 
 import argparse, socket, time, json, select, struct, sys, math
+from typing import List
+
+from announcement import Announcement
+
+
+def quadstr_to_num(quadstr):
+    quads = [int(qdn) for qdn in quadstr.split('.')]
+    num = 0
+    for quad in quads:
+        num = (num << 8) + quad
+
+    return num
 
 class Router:
 
     relations = {}
     sockets = {}
     ports = {}
+
+    forwarding_table: List[Announcement] = []
 
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
@@ -18,15 +32,18 @@ class Router:
             self.sockets[neighbor].bind(('localhost', 0))
             self.ports[neighbor] = int(port)
             self.relations[neighbor] = relation
-            self.send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
+            self.socket_send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
 
     def our_addr(self, dst):
         quads = list(int(qdn) for qdn in dst.split('.'))
         quads[3] = 1
         return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
-    def send(self, network, message):
+    def socket_send(self, network, message):
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
+
+    def send_bgp(self, network, type, msg):
+        self.socket_send(network, json.dumps({ "type": type, "src": self.our_addr(network), "dst": network, "msg": msg  }))
 
     def run(self):
         while True:
@@ -41,7 +58,52 @@ class Router:
                 msg = k.decode('utf-8')
 
                 print("Received message '%s' from %s" % (msg, srcif))
+
+                msg = json.loads(msg)
+                self.process_message(msg)
+
+
         return
+    
+    def process_message(self, msg):
+        if msg["type"] == "update":
+            args = msg["msg"]
+            ann = Announcement(
+                args["network"],
+                args["netmask"],
+                msg["src"],
+                args["localpref"],
+                args["ASPath"],
+                args["selfOrigin"],
+                args["origin"]
+            )
+
+            self.forwarding_table.append(ann)
+
+            for addr, rel in self.relations.items():
+                if addr != ann.peer:
+                    new_path = ann.ASPath.copy()
+                    new_path.insert(0,self.asn)
+
+                    self.send_bgp(addr, "update", {
+                        "network": ann.network,
+                        "netmask": ann.netmask,
+                        "ASPath":  new_path
+                    })
+
+
+        elif msg["type"] == "dump":
+            json_table = [ann.__dict__ for ann in self.forwarding_table]
+
+            self.send_bgp(msg["src"],"table",json_table)
+
+        elif msg["type"] == "data":
+            dst = msg["dst"]
+            dst = quadstr_to_num(dst)
+            filtered_table = [ann for ann in self.forwarding_table if quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask) == dst & quadstr_to_num(ann.netmask)]
+
+            self.socket_send(filtered_table[0].peer,json.dumps(msg))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
