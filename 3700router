@@ -111,14 +111,42 @@ class Router:
         self.forwarding_table.append(ann) 
         return   
     
-    def disaggregation(self):
-        self.forwarding_table = []
-        for ann in self.announcement_history:
-            if ann not in self.revocation_history:
-                self.aggregation(ann)
-        print(self.forwarding_table, file=sys.stderr)
-        return  
-               
+    def disaggregation(self, ann: Announcement, revoked_msg):
+        # base case
+        if (ann.network == revoked_msg["network"] and ann.netmask == revoked_msg["netmask"]):
+            return
+        
+        newMask = quadstr_to_num(ann.netmask) >> 1 | 0b10000000_00000000_00000000_00000000
+        fstNetwork = quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask)
+        fstHalf = Announcement(
+            network=num_to_quadstr(fstNetwork),
+            netmask=num_to_quadstr(newMask),
+            origin=ann.origin,
+            ASPath=ann.ASPath,
+            selfOrigin=ann.selfOrigin,
+            localpref=ann.localpref,
+            peer=ann.peer
+        )
+        
+        sndNetwork= (0b11111111111111111111111111111111 - newMask + 1) | fstNetwork
+        sndHalf = Announcement(
+            network=num_to_quadstr(sndNetwork),
+            netmask=num_to_quadstr(newMask),
+            origin=ann.origin,
+            ASPath=ann.ASPath,
+            selfOrigin=ann.selfOrigin,
+            localpref=ann.localpref,
+            peer=ann.peer
+        )
+        
+        if (quadstr_to_num(revoked_msg["network"]) & newMask == fstNetwork & newMask):
+            self.disaggregation(fstHalf, revoked_msg)
+            self.forwarding_table.append(sndHalf)
+        else:
+            self.disaggregation(sndHalf, revoked_msg)
+            self.forwarding_table.append(fstHalf)    
+        
+                   
     def process_message(self, msg, receiveFrom):
         if msg["type"] == "update":
             args = msg["msg"]
@@ -164,11 +192,15 @@ class Router:
 
         elif msg["type"] == "withdraw":
             for w in msg["msg"]:
-                results = [ann for ann in self.forwarding_table if ann.network == w["network"] and ann.netmask == w["netmask"] and ann.peer==msg["src"]]
-                for result in results:
-                    self.revocation_history.append(result)
+                results = [ann for ann in self.forwarding_table 
+                           if (quadstr_to_num(ann.network) & min(quadstr_to_num(w["netmask"]), quadstr_to_num(ann.netmask)) 
+                               == quadstr_to_num(w["network"]) & min(quadstr_to_num(w["netmask"]), quadstr_to_num(ann.netmask))) 
+                           and ann.peer==msg["src"]]
                 
-            self.disaggregation()
+                for result in results:
+                    self.forwarding_table.remove(result)
+                    if (quadstr_to_num(result.netmask) < quadstr_to_num(w["netmask"])):                        
+                        self.disaggregation(result, w)
 
             for addr, rel in self.relations.items():
                 if addr != msg["src"] and (self.relations[msg["src"]] == "cust" or self.relations[addr] == "cust"):
