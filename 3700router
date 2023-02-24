@@ -14,6 +14,14 @@ def quadstr_to_num(quadstr):
 
     return num
 
+def num_to_quadstr(num):
+    quadstr = []
+    for i in range(4):
+        quadstr.insert(0, str(num & 0b11111111))
+        num = num >> 8
+        
+    return ".".join(quadstr)
+
 class Router:
 
     relations = {}
@@ -65,10 +73,7 @@ class Router:
                 print("Received message '%s' from %s" % (msg, srcif))
 
                 msg = json.loads(msg)
-                print(addr, file=sys.stderr)
                 self.process_message(msg, srcif)
-
-
         return
 
     def filterFwdTable(self, network):
@@ -83,7 +88,37 @@ class Router:
         filtered_table.sort(key=lambda ann: quadstr_to_num(ann.netmask), reverse=True)
 
         return filtered_table
-
+        
+    # check if the two announcements can be aggregated
+    def canAggregate(self, ann1 : Announcement, ann2: Announcement, mask):
+        return ((ann1.netmask == ann2.netmask) # same netmask
+                and (quadstr_to_num(ann1.network) & mask == quadstr_to_num(ann2.network) & mask) # network is off by 1 bit
+                and (self.ports[ann1.peer] == self.ports[ann2.peer]) # same port number
+                # same attributes
+                and (ann1.localpref == ann2.localpref)
+                and (ann1.origin == ann2.origin)
+                and (ann1.selfOrigin == ann2.selfOrigin)
+                and (ann1.ASPath == ann2.ASPath))
+        
+    
+    def aggregation(self, ann: Announcement):
+        for row in self.forwarding_table:
+            newMask = (quadstr_to_num(ann.netmask) << 1)
+            if self.canAggregate(ann, row, newMask):
+                self.forwarding_table.remove(row)
+                row.netmask = num_to_quadstr(newMask)
+                return self.aggregation(row)
+        self.forwarding_table.append(ann) 
+        return   
+    
+    def disaggregation(self):
+        self.forwarding_table = []
+        for ann in self.announcement_history:
+            if ann not in self.revocation_history:
+                self.aggregation(ann)
+        print(self.forwarding_table, file=sys.stderr)
+        return  
+               
     def process_message(self, msg, receiveFrom):
         if msg["type"] == "update":
             args = msg["msg"]
@@ -97,7 +132,7 @@ class Router:
                 args["origin"]
             )
 
-            self.forwarding_table.append(ann)
+            self.aggregation(ann)
             self.announcement_history.append(ann)
 
             for addr, rel in self.relations.items():
@@ -128,17 +163,16 @@ class Router:
                     self.socket_send(sendTo,json.dumps(msg))
 
         elif msg["type"] == "withdraw":
-            revocations = msg["msg"]
-            self.revocation_history.append(revocations)
-            for w in revocations:
+            for w in msg["msg"]:
                 results = [ann for ann in self.forwarding_table if ann.network == w["network"] and ann.netmask == w["netmask"] and ann.peer==msg["src"]]
-                print(results, file=sys.stderr)
                 for result in results:
-                    self.forwarding_table.remove(result)
+                    self.revocation_history.append(result)
+                
+            self.disaggregation()
 
             for addr, rel in self.relations.items():
-                if addr != msg["src"] and (self.relations[msg["src"]] == "cust" | self.relations[addr] == "cust"):
-                    self.send_bgp(addr,"withdraw",revocations)
+                if addr != msg["src"] and (self.relations[msg["src"]] == "cust" or self.relations[addr] == "cust"):
+                    self.send_bgp(addr, "withdraw", msg["msg"])
 
 
 
