@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3
 
 import argparse, socket, time, json, select, struct, sys, math
 from typing import List
@@ -65,12 +65,26 @@ class Router:
                 print("Received message '%s' from %s" % (msg, srcif))
 
                 msg = json.loads(msg)
-                self.process_message(msg)
+                print(addr, file=sys.stderr)
+                self.process_message(msg, srcif)
 
 
         return
-    
-    def process_message(self, msg):
+
+    def filterFwdTable(self, network):
+        dst = quadstr_to_num(network)
+        filtered_table = [ann for ann in self.forwarding_table if quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask) == dst & quadstr_to_num(ann.netmask)]
+
+        filtered_table.sort(key=lambda ann: quadstr_to_num(ann.peer))
+        filtered_table.sort(key=lambda ann: ann.getOriginLevel(), reverse=True)
+        filtered_table.sort(key=lambda ann: len(ann.ASPath))
+        filtered_table.sort(key=lambda ann: ann.selfOrigin,reverse=True)
+        filtered_table.sort(key=lambda ann: ann.localpref, reverse=True)
+        filtered_table.sort(key=lambda ann: quadstr_to_num(ann.netmask), reverse=True)
+
+        return filtered_table
+
+    def process_message(self, msg, receiveFrom):
         if msg["type"] == "update":
             args = msg["msg"]
             ann = Announcement(
@@ -87,7 +101,8 @@ class Router:
             self.announcement_history.append(ann)
 
             for addr, rel in self.relations.items():
-                if addr != ann.peer:
+                # if the src is a customer, broadcast the msg, else if the addr is a cust, fwd the msg
+                if addr != ann.peer and (self.relations[ann.peer] == "cust" or self.relations[addr] == "cust"):
                     new_path = ann.ASPath.copy()
                     new_path.insert(0,self.asn)
 
@@ -98,25 +113,19 @@ class Router:
                     })
 
 
+
         elif msg["type"] == "dump":
             json_table = [ann.__dict__ for ann in self.forwarding_table]
 
             self.send_bgp(msg["src"],"table",json_table)
 
         elif msg["type"] == "data":
-            dst = msg["dst"]
-            dst = quadstr_to_num(dst)
-            filtered_table = [ann for ann in self.forwarding_table if quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask) == dst & quadstr_to_num(ann.netmask)]
+            filtered_table_dst = self.filterFwdTable(msg["dst"])
 
-            filtered_table.sort(key=lambda ann: quadstr_to_num(ann.peer))
-            filtered_table.sort(key=lambda ann: ann.getOriginLevel(), reverse=True)
-            filtered_table.sort(key=lambda ann: len(ann.ASPath))
-            filtered_table.sort(key=lambda ann: ann.selfOrigin,reverse=True)
-            filtered_table.sort(key=lambda ann: ann.localpref, reverse=True)
-            filtered_table.sort(key=lambda ann: quadstr_to_num(ann.netmask), reverse=True)
-
-            if len(filtered_table) > 0:
-                self.socket_send(filtered_table[0].peer,json.dumps(msg))
+            if len(filtered_table_dst) > 0:
+                sendTo = filtered_table_dst[0].peer
+                if self.relations[receiveFrom] == "cust" or self.relations[sendTo] == "cust":
+                    self.socket_send(sendTo,json.dumps(msg))
 
         elif msg["type"] == "withdraw":
             revocations = msg["msg"]
@@ -128,10 +137,10 @@ class Router:
                     self.forwarding_table.remove(result)
 
             for addr, rel in self.relations.items():
-                if addr != msg["src"]:
+                if addr != msg["src"] and (self.relations[msg["src"]] == "cust" | self.relations[addr] == "cust"):
                     self.send_bgp(addr,"withdraw",revocations)
-            
-                
+
+
 
 
 if __name__ == "__main__":
