@@ -22,6 +22,9 @@ class Router:
 
     forwarding_table: List[Announcement] = []
 
+    announcement_history = []
+    revocation_history = []
+
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
         self.asn = asn
@@ -40,9 +43,11 @@ class Router:
         return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
     def socket_send(self, network, message):
+        '''Use this to send messages whose end destination may not be the receiver'''
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
 
     def send_bgp(self, network, type, msg):
+        '''Use this to send specifically to BGP routers'''
         self.socket_send(network, json.dumps({ "type": type, "src": self.our_addr(network), "dst": network, "msg": msg  }))
 
     def run(self):
@@ -79,6 +84,7 @@ class Router:
             )
 
             self.forwarding_table.append(ann)
+            self.announcement_history.append(ann)
 
             for addr, rel in self.relations.items():
                 if addr != ann.peer:
@@ -102,7 +108,30 @@ class Router:
             dst = quadstr_to_num(dst)
             filtered_table = [ann for ann in self.forwarding_table if quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask) == dst & quadstr_to_num(ann.netmask)]
 
-            self.socket_send(filtered_table[0].peer,json.dumps(msg))
+            filtered_table.sort(key=lambda ann: quadstr_to_num(ann.peer))
+            filtered_table.sort(key=lambda ann: ann.getOriginLevel(), reverse=True)
+            filtered_table.sort(key=lambda ann: len(ann.ASPath))
+            filtered_table.sort(key=lambda ann: ann.selfOrigin,reverse=True)
+            filtered_table.sort(key=lambda ann: ann.localpref, reverse=True)
+            filtered_table.sort(key=lambda ann: quadstr_to_num(ann.netmask), reverse=True)
+
+            if len(filtered_table) > 0:
+                self.socket_send(filtered_table[0].peer,json.dumps(msg))
+
+        elif msg["type"] == "withdraw":
+            revocations = msg["msg"]
+            self.revocation_history.append(revocations)
+            for w in revocations:
+                results = [ann for ann in self.forwarding_table if ann.network == w["network"] and ann.netmask == w["netmask"] and ann.peer==msg["src"]]
+                print(results, file=sys.stderr)
+                for result in results:
+                    self.forwarding_table.remove(result)
+
+            for addr, rel in self.relations.items():
+                if addr != msg["src"]:
+                    self.send_bgp(addr,"withdraw",revocations)
+            
+                
 
 
 if __name__ == "__main__":
