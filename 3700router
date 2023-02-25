@@ -23,7 +23,7 @@ def quadstr_to_num(quadstr):
     return num
 
 def num_to_quadstr(num):
-    """ Converts an integer binary to a quad string, aka reserving the method above
+    """ Converts an integer binary to a quad string, aka reversing the method above
 
     Args:
         num (int): the given ineger binary
@@ -213,10 +213,19 @@ class Router:
                     self.socket_send(sendTo,json.dumps(msg))
             else:
                 # if no valid entries is found in the table, send no route message back to the sender
-                self.send_bgp(receiveFrom, "no route", {})
+                self.socket_send(receiveFrom,json.dumps({
+                    "type": "no route",
+                    "dst": msg["dst"],
+                    "src": self.our_addr(receiveFrom),
+                    "data": {}
+                }))
 
         elif msg["type"] == "withdraw":
             for w in msg["msg"]:
+
+                # save revocation in history
+                self.revocation_history.append(w)
+
                 # get a list of entries that match the network and netmask from this withdraw message
                 results = [ann for ann in self.forwarding_table 
                            if (quadstr_to_num(ann.network) & min(quadstr_to_num(w["netmask"]), quadstr_to_num(ann.netmask)) 

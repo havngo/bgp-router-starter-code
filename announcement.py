@@ -3,6 +3,7 @@ from typing import List
 
 
 class Announcement:
+    '''A route announcement received from BGP routers, also used to represent rows in the forwarding table.'''
     def __init__(self, network, netmask, peer, localpref, ASPath: List[int], selfOrigin, origin) -> None:
         self.network = network
         self.netmask = netmask
@@ -16,6 +17,7 @@ class Announcement:
     def __repr__(self) -> str:
         return self.__str__()
     def getOriginLevel(self):
+        '''Gets the origin of this announcement as an integer, with higher priority origins receiving higher values.'''
         if self.origin == "IGP":
             return 2
         elif self.origin == "EGP":
