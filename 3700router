@@ -7,6 +7,14 @@ from announcement import Announcement
 
 
 def quadstr_to_num(quadstr):
+    """ Converts a quad string (IP address) to an integer representing the same binary presentation.
+
+    Args:
+        quadstr (string): the given IP address
+
+    Returns:
+        int : an int number of the IP
+    """
     quads = [int(qdn) for qdn in quadstr.split('.')]
     num = 0
     for quad in quads:
@@ -15,6 +23,14 @@ def quadstr_to_num(quadstr):
     return num
 
 def num_to_quadstr(num):
+    """ Converts an integer binary to a quad string, aka reserving the method above
+
+    Args:
+        num (int): the given ineger binary
+
+    Returns:
+        string: the IP address in quad string
+    """
     quadstr = []
     for i in range(4):
         quadstr.insert(0, str(num & 0b11111111))
@@ -77,6 +93,7 @@ class Router:
         return
 
     def filterFwdTable(self, network):
+        '''Filter the fwd table and sort it by specifications'''
         dst = quadstr_to_num(network)
         filtered_table = [ann for ann in self.forwarding_table if quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask) == dst & quadstr_to_num(ann.netmask)]
 
@@ -89,8 +106,8 @@ class Router:
 
         return filtered_table
         
-    # check if the two announcements can be aggregated
     def canAggregate(self, ann1 : Announcement, ann2: Announcement, mask):
+        '''Check if the two announcements can be aggregated'''
         return ((ann1.netmask == ann2.netmask) # same netmask
                 and (quadstr_to_num(ann1.network) & mask == quadstr_to_num(ann2.network) & mask) # network is off by 1 bit
                 and (self.ports[ann1.peer] == self.ports[ann2.peer]) # same port number
@@ -102,6 +119,7 @@ class Router:
         
     
     def aggregation(self, ann: Announcement):
+        '''Aggregate the table given a new announcement to add as an entry to the table'''
         for row in self.forwarding_table:
             newMask = (quadstr_to_num(ann.netmask) << 1)
             if self.canAggregate(ann, row, newMask):
@@ -112,10 +130,12 @@ class Router:
         return   
     
     def disaggregation(self, ann: Announcement, revoked_msg):
+        '''Disaggregate the table, at the given entry ann, with the revoked network given'''
         # base case
         if (ann.network == revoked_msg["network"] and ann.netmask == revoked_msg["netmask"]):
             return
         
+        # split the entry that needs to be disaggregated in the table in half
         newMask = quadstr_to_num(ann.netmask) >> 1 | 0b10000000_00000000_00000000_00000000
         fstNetwork = quadstr_to_num(ann.network) & quadstr_to_num(ann.netmask)
         fstHalf = Announcement(
@@ -139,6 +159,7 @@ class Router:
             peer=ann.peer
         )
         
+        # continue disaggregate one half until found the revoked network, append the other half back to the table
         if (quadstr_to_num(revoked_msg["network"]) & newMask == fstNetwork & newMask):
             self.disaggregation(fstHalf, revoked_msg)
             self.forwarding_table.append(sndHalf)
@@ -148,6 +169,8 @@ class Router:
         
                    
     def process_message(self, msg, receiveFrom):
+        '''Handles all message types received'''
+        
         if msg["type"] == "update":
             args = msg["msg"]
             ann = Announcement(
@@ -160,11 +183,12 @@ class Router:
                 args["origin"]
             )
 
+            # aggregate the table and append the ann to the history list
             self.aggregation(ann)
             self.announcement_history.append(ann)
 
             for addr, rel in self.relations.items():
-                # if the src is a customer, broadcast the msg, else if the addr is a cust, fwd the msg
+                # if the src is a customer, broadcast the msg, else if the addr is a cust, fwd the msg to that addr
                 if addr != ann.peer and (self.relations[ann.peer] == "cust" or self.relations[addr] == "cust"):
                     new_path = ann.ASPath.copy()
                     new_path.insert(0,self.asn)
@@ -174,8 +198,6 @@ class Router:
                         "netmask": ann.netmask,
                         "ASPath":  new_path
                     })
-
-
 
         elif msg["type"] == "dump":
             json_table = [ann.__dict__ for ann in self.forwarding_table]
@@ -189,19 +211,26 @@ class Router:
                 sendTo = filtered_table_dst[0].peer
                 if self.relations[receiveFrom] == "cust" or self.relations[sendTo] == "cust":
                     self.socket_send(sendTo,json.dumps(msg))
+            else:
+                # if no valid entries is found in the table, send no route message back to the sender
+                self.send_bgp(receiveFrom, "no route", {})
 
         elif msg["type"] == "withdraw":
             for w in msg["msg"]:
+                # get a list of entries that match the network and netmask from this withdraw message
                 results = [ann for ann in self.forwarding_table 
                            if (quadstr_to_num(ann.network) & min(quadstr_to_num(w["netmask"]), quadstr_to_num(ann.netmask)) 
                                == quadstr_to_num(w["network"]) & min(quadstr_to_num(w["netmask"]), quadstr_to_num(ann.netmask))) 
                            and ann.peer==msg["src"]]
                 
                 for result in results:
+                    # remove the matched entry from the table
                     self.forwarding_table.remove(result)
+                    #if the entry is a more general IP, a.k.a its netmask is shorter than the revoked's netmask, disaggregate the table
                     if (quadstr_to_num(result.netmask) < quadstr_to_num(w["netmask"])):                        
                         self.disaggregation(result, w)
 
+            # fwd the withdraw message if necessary
             for addr, rel in self.relations.items():
                 if addr != msg["src"] and (self.relations[msg["src"]] == "cust" or self.relations[addr] == "cust"):
                     self.send_bgp(addr, "withdraw", msg["msg"])
